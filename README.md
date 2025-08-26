@@ -122,7 +122,7 @@ We're using changeset to automate the release process. The only thing to be done
 
 As this is a fork of the original [node-ts-cache](https://github.com/havsar/node-ts-cache), all credit goes to the upstream project by [havsar](https://github.com/havsar).
 
-Structural changes have been made by [boredland](https://github.com/havsar) in order to align more with our use-case.
+Structural changes have been made by [boredland](https://github.com/boredland) in order to align more with our use-case.
 
 ## Contributing (complexity, asc)
 
