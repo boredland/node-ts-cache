@@ -24,7 +24,7 @@ describe("LRUStorage with withCache", () => {
 
 			expect(result1).toBe(10);
 			expect(result2).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 		});
 
 		it("should differentiate between different parameters", async () => {
@@ -36,7 +36,7 @@ describe("LRUStorage with withCache", () => {
 
 			expect(result1).toBe(10);
 			expect(result2).toBe(20);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 		});
 
 		it("should use custom calculateKey function", async () => {
@@ -50,7 +50,7 @@ describe("LRUStorage with withCache", () => {
 
 			expect(result1).toBe(3);
 			expect(result2).toBe(3);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 		});
 
 		it("should support prefix option", async () => {
@@ -63,7 +63,7 @@ describe("LRUStorage with withCache", () => {
 
 			expect(result1).toBe(10);
 			expect(result2).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 		});
 
 		it("should work with multiple parameters", async () => {
@@ -75,82 +75,87 @@ describe("LRUStorage with withCache", () => {
 
 			expect(result1).toBe("1-a");
 			expect(result2).toBe("1-a");
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 		});
 	});
 
 	describe("TTL and expiration", () => {
-		it("should expire items after ttl", async () => {
+		it("should cache items with TTL in eager mode", async () => {
 			const mockFn = vi.fn(async (x: number) => x * 2);
-			const cachedFn = withCache(mockFn, { ttl: 100, isLazy: false });
+			const cachedFn = withCache(mockFn, { ttl: 100, strategy: "eager" });
 
 			const result1 = await cachedFn(5);
 			expect(result1).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 
 			// Item should still be cached before expiration
 			const result2 = await cachedFn(5);
 			expect(result2).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 
 			// Wait for expiration
 			await new Promise((resolve) => setTimeout(resolve, 150));
 
+			// After expiration, item is removed and function is called again
 			const result3 = await cachedFn(5);
 			expect(result3).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 		});
 
-		it("should return undefined for expired non-lazy items", async () => {
+		it("should use lazy strategy to invalidate cache on touch", async () => {
+			const mockFn = vi.fn(async (x: number) => x * 2);
+			const cachedFn = withCache(mockFn, { ttl: 100, strategy: "lazy" });
+
+			const result1 = await cachedFn(5);
+			expect(result1).toBe(10);
+			expect(mockFn).toHaveResolvedTimes(1);
+
+			// Item should be cached for one subsequent call
+			const result2 = await cachedFn(5);
+			expect(result2).toBe(10);
+			expect(mockFn).toHaveResolvedTimes(1);
+
+			// Wait for expiration
+			await new Promise((resolve) => setTimeout(resolve, 150));
+
+			// After expiration, the cached item is stale, but should be returned
+			const result3 = await cachedFn(5);
+			expect(result3).toBe(10);
+			expect(mockFn).toHaveResolvedTimes(1);
+
+			// Next call should have invalidated the cache and call the function again
+			const result4 = await cachedFn(5);
+			expect(result4).toBe(10);
+			expect(mockFn).toHaveResolvedTimes(2);
+		});
+
+		it("should use swr strategy to return stale cache and revalidate in background", async () => {
 			const mockFn = vi.fn(async (x: number) => {
-				return { value: x * 2 };
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				return x * 2;
 			});
-			const cachedFn = withCache(mockFn, { ttl: 100, isLazy: false });
-
-			const result1 = await cachedFn(5);
-			expect(result1).toEqual({ value: 10 });
-
-			await new Promise((resolve) => setTimeout(resolve, 150));
-
-			const result2 = await cachedFn(5);
-			expect(result2).toEqual({ value: 10 });
-		});
-
-		it("should return expired lazy items", async () => {
-			const mockFn = vi.fn(async (x: number) => x * 2);
-			const cachedFn = withCache(mockFn, { ttl: 100, isLazy: true });
+			const cachedFn = withCache(mockFn, { ttl: 100, strategy: "swr" });
 
 			const result1 = await cachedFn(5);
 			expect(result1).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 
-			await new Promise((resolve) => setTimeout(resolve, 150));
-
+			// Item should be cached
 			const result2 = await cachedFn(5);
 			expect(result2).toBe(10);
-			// With isLazy: true, expired items are still returned without calling the function again
-			// The function is only called once, not twice
-			expect(mockFn).toHaveBeenCalledTimes(1);
-		});
+			expect(mockFn).toHaveResolvedTimes(1);
 
-		it("should call afterExpired callback when lazy item expires", async () => {
-			const afterExpired = vi.fn();
-			const mockFn = vi.fn(async (x: number) => x * 2);
-			const cachedFn = withCache(mockFn, {
-				ttl: 100,
-				isLazy: true,
-				afterExpired,
-			});
-
-			const result1 = await cachedFn(5);
-			expect(result1).toBe(10);
-			expect(afterExpired).not.toHaveBeenCalled();
-
+			// Wait for expiration
 			await new Promise((resolve) => setTimeout(resolve, 150));
 
-			const result2 = await cachedFn(5);
-			expect(result2).toBe(10);
-			expect(afterExpired).toHaveBeenCalledTimes(1);
+			// With swr strategy, expired items are returned immediately
+			const result3 = await cachedFn(5);
+			expect(result3).toBe(10);
+			expect(mockFn).toHaveResolvedTimes(1);
+			// The stale cache is returned, but revalidation is queued in background
+			// Wait a bit for background revalidation to complete
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect(mockFn).toHaveResolvedTimes(2);
 		});
 	});
 
@@ -166,7 +171,7 @@ describe("LRUStorage with withCache", () => {
 
 			const result2 = await cachedFn(5);
 			expect(result2).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 		});
 
 		it("should cache when shouldStore returns true", async () => {
@@ -180,7 +185,7 @@ describe("LRUStorage with withCache", () => {
 
 			const result2 = await cachedFn(5);
 			expect(result2).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 		});
 
 		it("should evaluate shouldStore on complex results", async () => {
@@ -198,7 +203,7 @@ describe("LRUStorage with withCache", () => {
 
 			const result2 = await cachedFn(5);
 			expect(result2).toEqual({ value: 10, success: true });
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 		});
 	});
 
@@ -217,22 +222,22 @@ describe("LRUStorage with withCache", () => {
 			await cachedFn(2); // key2
 			await cachedFn(3); // key3
 
-			expect(mockFn).toHaveBeenCalledTimes(3);
+			expect(mockFn).toHaveResolvedTimes(3);
 
 			// Access all three to verify they're cached
 			await cachedFn(1);
 			await cachedFn(2);
 			await cachedFn(3);
-			expect(mockFn).toHaveBeenCalledTimes(3);
+			expect(mockFn).toHaveResolvedTimes(3);
 
 			// Add a new item, which should evict the least recently used
 			await cachedFn(4); // This should evict key1 (least recently used)
 
-			expect(mockFn).toHaveBeenCalledTimes(4);
+			expect(mockFn).toHaveResolvedTimes(4);
 
 			// key1 should be evicted and function should be called again
 			await cachedFn(1);
-			expect(mockFn).toHaveBeenCalledTimes(5);
+			expect(mockFn).toHaveResolvedTimes(5);
 		});
 
 		it("should keep recently accessed items in cache", async () => {
@@ -245,23 +250,23 @@ describe("LRUStorage with withCache", () => {
 
 			await cachedFn(1);
 			await cachedFn(2);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 
 			// Access 1 again to make it recently used
 			await cachedFn(1);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 
 			// Add 3, should evict 2 (not 1)
 			await cachedFn(3);
-			expect(mockFn).toHaveBeenCalledTimes(3);
+			expect(mockFn).toHaveResolvedTimes(3);
 
 			// 1 should still be cached
 			await cachedFn(1);
-			expect(mockFn).toHaveBeenCalledTimes(3);
+			expect(mockFn).toHaveResolvedTimes(3);
 
 			// 2 should have been evicted
 			await cachedFn(2);
-			expect(mockFn).toHaveBeenCalledTimes(4);
+			expect(mockFn).toHaveResolvedTimes(4);
 		});
 	});
 
@@ -272,7 +277,7 @@ describe("LRUStorage with withCache", () => {
 
 			await cachedFn(1);
 			await cachedFn(2);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 
 			// Clear cache
 			await container.clear();
@@ -280,7 +285,7 @@ describe("LRUStorage with withCache", () => {
 			// Should call function again
 			await cachedFn(1);
 			await cachedFn(2);
-			expect(mockFn).toHaveBeenCalledTimes(4);
+			expect(mockFn).toHaveResolvedTimes(4);
 		});
 
 		it("should remove individual cache entries", async () => {
@@ -295,7 +300,7 @@ describe("LRUStorage with withCache", () => {
 			});
 
 			await cachedFn(5);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 
 			// Manually remove the key - must include the function name and prefix
 			// The key format is: ${operation.name}:${prefix}:${calculateKeyResult}
@@ -304,7 +309,7 @@ describe("LRUStorage with withCache", () => {
 
 			// Should call function again
 			await cachedFn(5);
-			expect(mockFn).toHaveBeenCalledTimes(2);
+			expect(mockFn).toHaveResolvedTimes(2);
 		});
 	});
 
@@ -339,33 +344,31 @@ describe("LRUStorage with withCache", () => {
 
 			// Verify both results are the same object (cached)
 			expect(result1).toBe(result2);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 		});
 
 		it("should combine multiple cache options", async () => {
-			const afterExpired = vi.fn();
 			const mockFn = vi.fn(async (x: number) => x * 2);
 			const cachedFn = withCache(mockFn, {
 				prefix: "combined",
 				ttl: 100,
-				isLazy: true,
+				strategy: "lazy",
 				shouldStore: (result: unknown) => (result as number) > 5,
-				afterExpired,
 			});
 
 			const result1 = await cachedFn(5);
 			expect(result1).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 
 			const result2 = await cachedFn(5);
 			expect(result2).toBe(10);
-			expect(mockFn).toHaveBeenCalledTimes(1);
+			expect(mockFn).toHaveResolvedTimes(1);
 
 			await new Promise((resolve) => setTimeout(resolve, 150));
 
 			const result3 = await cachedFn(5);
 			expect(result3).toBe(10);
-			expect(afterExpired).toHaveBeenCalled();
+			expect(mockFn).toHaveResolvedTimes(1);
 		});
 	});
 
@@ -449,7 +452,7 @@ describe("LRUStorage with withCache", () => {
 			await cachedFn(5);
 			await cachedFn(5);
 
-			expect(fn).toHaveBeenCalledTimes(1);
+			expect(fn).toHaveResolvedTimes(1);
 		});
 	});
 

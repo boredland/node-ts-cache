@@ -1,17 +1,31 @@
+import PQueue from "p-queue";
 import type { CacheContainer, CachingOptions } from "./cacheContainer.ts";
 import hash from "./hash.ts";
 
+const revalidationQueues: Record<string, PQueue> = {};
+
 type WithCacheOptions<Parameters, Result> = Partial<
-	Omit<CachingOptions, "calculateKey">
+	Omit<CachingOptions, "calculateKey" | "isLazy">
 > & {
 	/** an optional prefix to prepend to the key */
 	prefix?: string;
 	/** an optional function to calculate a key based on the parameters of the wrapped function */
 	calculateKey?: (input: Parameters) => string;
-	/** an optional function that is called when a lazy item has expired and thus got removed  */
-	afterExpired?: () => Promise<void>;
 	/** an optional function that is called just before the result is stored to the storage */
 	shouldStore?: (result: Awaited<Result>) => boolean;
+	/**
+	 * caching strategy to use
+	 * - "lazy": cache is populated in the background after returning the result
+	 * - "swr": stale-while-revalidate, cache is returned if present and updated in the background
+	 * - "eager": cache is populated before returning the result
+	 * @default "eager"
+	 */
+	strategy?: "lazy" | "swr" | "eager";
+	/**
+	 * Concurrency for revalidation queue
+	 * @default 1
+	 */
+	revalidationConcurrency?: number;
 };
 
 /**
@@ -34,24 +48,52 @@ export const withCacheFactory = (container: CacheContainer) => {
 		options: WithCacheOptions<Parameters, Result> = {},
 	) => {
 		return async (...parameters: Parameters): Promise<Result> => {
-			const { calculateKey, ...rest } = options;
+			const {
+				calculateKey,
+				strategy = "eager",
+				revalidationConcurrency = 1,
+				...rest
+			} = options;
 			const prefix = options.prefix ?? "default";
 			const key = `${operation.name}:${prefix}:${
 				calculateKey ? calculateKey(parameters) : hash(parameters)
-			}`;
+			}` as const;
+
+			if (!revalidationQueues[key]) {
+				revalidationQueues[key] = new PQueue({
+					concurrency: revalidationConcurrency,
+				});
+			}
+
 			const cachedResponse = await container.getItem<Awaited<Result>>(key);
 
-			if (cachedResponse) {
-				if (cachedResponse.meta.expired && options.afterExpired) {
-					await options.afterExpired();
+			const refreshedItem = async () => {
+				const result = await operation(...parameters);
+				if (!options.shouldStore || options.shouldStore(result)) {
+					await container.setItem(key, result, {
+						...rest,
+						isLazy: strategy === "lazy" || strategy === "swr",
+					});
 				}
+				return result;
+			};
+
+			/**
+			 * Stale-While-Revalidate strategy
+			 * If the cached response is expired, we return it immediately and
+			 * revalidate in the background
+			 */
+			if (strategy === "swr" && cachedResponse?.meta.expired) {
+				revalidationQueues[key].add(refreshedItem, {
+					id: key,
+				});
+			}
+
+			if (cachedResponse) {
 				return cachedResponse.content;
 			}
 
-			const result = await operation(...parameters);
-			if (!options.shouldStore || options.shouldStore(result)) {
-				await container.setItem(key, result, rest);
-			}
+			const result = await refreshedItem();
 			return result;
 		};
 	};
