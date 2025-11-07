@@ -5,55 +5,23 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    branches: [main]
-    inputs:
-      force-release:
-        default: false
-        description: "try to release even with no changes"
-        required: false
-        type: boolean
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [16.x, 18.x]
+        node-version: [22.x, 24.x]
     steps:
-      - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b # tag=v3
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # tag=v5.5.0
         with:
           token: ${{ github.token }}
           fetch-depth: 0
       - name: setup node ${{ matrix.node-version }}
-        uses: actions/setup-node@969bd2663942d722d85b6a8626225850c2f7be4b # tag=v3
+        uses: actions/setup-node@dda4788290998366da86b6a4f497909644397bb2 # tag=v6.6.0
         with:
           node-version: ${{ matrix.node-version }}
-          cache: "yarn"
-      - run: yarn --frozen-lockfile
-      - run: yarn build
-      - run: yarn test --coverage
-      - uses: coverallsapp/github-action@master
-        if: ${{ matrix.node-version == '16.x' }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-  publish:
-    runs-on: ubuntu-latest
-    needs: [test]
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b # tag=v3
-      - name: setup node ${{ matrix.node-version }}
-        uses: actions/setup-node@969bd2663942d722d85b6a8626225850c2f7be4b # tag=v3
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: "yarn"
-      - run: yarn --frozen-lockfile
-      - run: yarn build
-      - name: release
-        run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          npm config set //registry.npmjs.org/:_authToken ${{ secrets.NPM_TOKEN }}
-          yarn publish-packages
-          git push
+          cache: "npm"
+      - run: npm i --prefer-offline
+      - run: npm run build
+      - run: npm run test
