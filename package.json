@@ -1,22 +1,35 @@
 {
-	"name": "@boredland/node-ts-cache",
-	"private": false,
-	"type": "module",
-	"scripts": {
-		"build": "npm run build",
-		"test": "vitest",
-		"lint": "tsc && biome check --fix --no-errors-on-unmatched",
-		"prepublishOnly": "npm run build && npm run test"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "2.3.4",
-		"@types/node": "^24.10.0",
-		"typescript": "^5.9.3"
-	},
-	"dependencies": {
-		"lru-cache": "^11.2.2",
-		"node-object-hash": "^3.1.1",
-		"p-queue": "^9.0.0",
-		"vitest": "^4.0.8"
-	}
+  "name": "@boredland/node-ts-cache",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boredland/node-ts-cache.git"
+  },
+  "license": "ISC",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest",
+    "lint": "tsc && biome check --fix --no-errors-on-unmatched",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.4",
+    "@types/node": "^24.10.0",
+    "tsdown": "^0.16.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "lru-cache": "^11.2.2",
+    "node-object-hash": "^3.1.1",
+    "p-queue": "^9.0.0",
+    "vitest": "^4.0.8"
+  },
+  "main": "dist/index.mjs",
+  "types": "./dist/node.d.mts",
+  "module": "./dist/index.mjs",
+  "publishConfig": {
+    "access": "public"
+  }
 }
