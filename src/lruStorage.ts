@@ -19,7 +19,7 @@ export class LRUStorage implements Storage {
 
 	async getItem(key: string) {
 		const item = this.cache.get(key);
-		return item as CachedItem | undefined;
+		return item;
 	}
 
 	async setItem(key: string, content: CachedItem) {
