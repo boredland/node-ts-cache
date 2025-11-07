@@ -1,6 +1,6 @@
 {
   "name": "@boredland/node-ts-cache",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/boredland/node-ts-cache.git"
@@ -36,5 +36,8 @@
   },
   "engines": {
     "node": ">=22.0.0"
-  }
+  },
+  "files": [
+    "dist"
+  ]
 }
