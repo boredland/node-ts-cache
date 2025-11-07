@@ -1,29 +1,19 @@
 {
-  "name": "root",
-  "private": true,
-  "scripts": {
-    "build": "turbo run build",
-    "test": "jest",
-    "publish-packages": "turbo run build test && changeset version && changeset publish"
-  },
-  "devDependencies": {
-    "@changesets/cli": "^2.24.4",
-    "@swc/core": "^1.3.4",
-    "@swc/jest": "^0.2.23",
-    "@types/jest": "^29.1.0",
-    "@types/node": "^16",
-    "@typescript-eslint/eslint-plugin": "^5.38.1",
-    "@typescript-eslint/parser": "^5.38.1",
-    "eslint": "^8.24.0",
-    "eslint-config-prettier": "^8.5.0",
-    "eslint-plugin-prettier": "^4.2.1",
-    "jest": "^29.1.1",
-    "prettier": "^2.7.1",
-    "ts-node": "^10.9.1",
-    "turbo": "^1.5.5",
-    "typescript": "^4.8.4"
-  },
-  "workspaces": [
-    "./packages/*"
-  ]
+	"name": "@boredland/node-ts-cache",
+	"private": false,
+	"type": "module",
+	"scripts": {
+		"build": "npm run build",
+		"test": "vitest",
+		"lint": "tsc && biome check --fix --no-errors-on-unmatched",
+		"prepublishOnly": "npm run build && npm run test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.4",
+		"@types/node": "^24.10.0",
+		"typescript": "^5.9.3"
+	},
+	"dependencies": {
+		"node-object-hash": "^3.1.1"
+	}
 }

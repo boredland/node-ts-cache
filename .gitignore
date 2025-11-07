@@ -1,26 +1,3 @@
-# IDE STUFF
-.idea
-.vscode
-
 # PACKAGE MANAGER
-**/node_modules
-npm-debug.log
-
-# TYPESCRIPT
-packages/**/.baseDir.ts
-packages/**/.tscache
-
-# CUSTOM FILES
-.git
-packages/*.js
-packages/*.js.map
-packages/**/dist
-**/.env
-**/.env.
-lerna-debug.log
-
-# jest
-coverage
-
-#turbo
-**/.turbo
+node_modules
+dist
