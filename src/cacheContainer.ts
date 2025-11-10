@@ -70,8 +70,8 @@ export class CacheContainer {
 
 		const meta: CachedItem<typeof content>["meta"] = {
 			createdAt: Date.now(),
-			staleTtl: finalOptions.staleTtl,
 			ttl: finalOptions.ttl,
+			staleTtl: finalOptions.staleTtl,
 		};
 
 		await this.storage.setItem(key, { meta, content });

@@ -97,7 +97,7 @@ export const withCacheFactory = (container: CacheContainer) => {
 			 * The easiest case: no caching at all
 			 */
 			if (cacheTimeMs === 0 && staleTimeMs === 0) {
-				return refreshedItem();
+				return operation(...parameters);
 			}
 
 			/**
