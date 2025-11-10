@@ -6,15 +6,15 @@ export type CachedItem<T = unknown> = {
 	meta: {
 		createdAt: number;
 		ttl: number | null;
-		isLazy: boolean;
+		staleTtl?: number | null;
 	};
 };
 
 export type CachingOptions = {
-	/** Number of milliseconds to expire the cachte item - defaults to forever */
+	/** Number of milliseconds to expire the cached item - defaults to forever */
 	ttl: number | null;
-	/** (Default: true) If true, expired cache entries will be deleted on touch and returned anyway. If false, entries will be deleted after the given ttl. */
-	isLazy: boolean;
+	/** Number of milliseconds to mark the cached item stale - defaults to the ttl */
+	staleTtl: number | null;
 	/** (Default: JSON.stringify combination of className, methodName and call args) */
 	calculateKey: (data: {
 		/** The class name for the method being decorated */
@@ -29,10 +29,12 @@ export type CachingOptions = {
 export class CacheContainer {
 	constructor(private storage: Storage) {}
 
-	public async getItem<T>(
-		key: string,
-	): Promise<
-		{ content: T; meta: { expired: boolean; createdAt: number } } | undefined
+	public async getItem<T>(key: string): Promise<
+		| {
+				content: T;
+				meta: { expired: boolean; stale: boolean; createdAt: number };
+		  }
+		| undefined
 	> {
 		const item = await this.storage.getItem(key);
 
@@ -43,12 +45,14 @@ export class CacheContainer {
 			meta: {
 				createdAt: item.meta.createdAt,
 				expired: this.isItemExpired(item),
+				stale: this.isStaleItem(item),
 			},
 		};
 
-		if (result.meta.expired) await this.unsetKey(key);
-
-		if (result.meta.expired && !item.meta.isLazy) return undefined;
+		if (result.meta.expired && !result.meta.stale) {
+			await this.unsetKey(key);
+			return undefined;
+		}
 
 		return result;
 	}
@@ -60,13 +64,13 @@ export class CacheContainer {
 	): Promise<void> {
 		const finalOptions = {
 			ttl: null,
-			isLazy: true,
+			staleTtl: null,
 			...options,
 		};
 
 		const meta: CachedItem<typeof content>["meta"] = {
 			createdAt: Date.now(),
-			isLazy: finalOptions.isLazy,
+			staleTtl: finalOptions.staleTtl,
 			ttl: finalOptions.ttl,
 		};
 
@@ -82,6 +86,12 @@ export class CacheContainer {
 	private isItemExpired(item: CachedItem): boolean {
 		if (item.meta.ttl === null) return false;
 		return Date.now() > item.meta.createdAt + item.meta.ttl;
+	}
+
+	private isStaleItem(item: CachedItem): boolean {
+		const staleTtl = item.meta.staleTtl ?? item.meta.ttl;
+		if (staleTtl === null) return false;
+		return Date.now() > item.meta.createdAt + staleTtl;
 	}
 
 	public async unsetKey(key: string): Promise<void> {

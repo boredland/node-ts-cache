@@ -1,312 +1,597 @@
-import type { Storage } from "./storage.ts";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FallbackStorage } from "./fallbackStorage.ts";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { CachedItem } from "./cacheContainer.ts";
+import { FallbackStorage } from "./fallbackStorage.ts";
+import type { Storage } from "./storage.ts";
 
-// Mock Storage implementation for testing
+// Mock storage implementation
 class MockStorage implements Storage {
-  private items: Map<string, CachedItem> = new Map();
-  public getItemCalls: string[] = [];
-  public setItemCalls: Array<{ key: string; content: CachedItem }> = [];
-  public removeItemCalls: string[] = [];
+	private items: Map<string, CachedItem> = new Map();
+	public callCounts = {
+		getItem: 0,
+		setItem: 0,
+		removeItem: 0,
+		clear: 0,
+	};
 
-  async getItem(key: string): Promise<CachedItem | undefined> {
-    this.getItemCalls.push(key);
-    return this.items.get(key);
-  }
+	async getItem(key: string): Promise<CachedItem | undefined> {
+		this.callCounts.getItem++;
+		return this.items.get(key);
+	}
 
-  async setItem(key: string, content: CachedItem): Promise<void> {
-    this.setItemCalls.push({ key, content });
-    this.items.set(key, content);
-  }
+	async setItem(key: string, content: CachedItem): Promise<void> {
+		this.callCounts.setItem++;
+		this.items.set(key, content);
+	}
 
-  async removeItem(key: string): Promise<void> {
-    this.removeItemCalls.push(key);
-    this.items.delete(key);
-  }
+	async removeItem(key: string): Promise<void> {
+		this.callCounts.removeItem++;
+		this.items.delete(key);
+	}
 
-  async clear(): Promise<void> {
-    this.items.clear();
-    this.getItemCalls = [];
-    this.setItemCalls = [];
-    this.removeItemCalls = [];
-  }
+	async clear(): Promise<void> {
+		this.callCounts.clear++;
+		this.items.clear();
+	}
+
+	getStoredItems(): Map<string, CachedItem> {
+		return new Map(this.items);
+	}
+
+	reset(): void {
+		this.items.clear();
+		this.callCounts = {
+			getItem: 0,
+			setItem: 0,
+			removeItem: 0,
+			clear: 0,
+		};
+	}
 }
 
 describe("FallbackStorage", () => {
-  let storage1: MockStorage;
-  let storage2: MockStorage;
-  let storage3: MockStorage;
-  let fallbackStorage: FallbackStorage;
+	let primaryStorage: MockStorage;
+	let secondaryStorage: MockStorage;
+	let tertiaryStorage: MockStorage;
+	let fallbackStorage: FallbackStorage;
 
-  const createTestItem = (value: string): CachedItem => ({
-    content: value,
-    meta: {
-      createdAt: Date.now(),
-      ttl: null,
-      isLazy: false,
-    },
-  });
+	const createItem = (content: unknown): CachedItem => ({
+		content,
+		meta: {
+			createdAt: Date.now(),
+			ttl: null,
+			staleTtl: null,
+		},
+	});
 
-  beforeEach(() => {
-    storage1 = new MockStorage();
-    storage2 = new MockStorage();
-    storage3 = new MockStorage();
-    fallbackStorage = new FallbackStorage([storage1, storage2, storage3]);
-  });
+	beforeEach(() => {
+		primaryStorage = new MockStorage();
+		secondaryStorage = new MockStorage();
+		tertiaryStorage = new MockStorage();
+		fallbackStorage = new FallbackStorage([
+			primaryStorage,
+			secondaryStorage,
+			tertiaryStorage,
+		]);
+	});
 
-  describe("getItem", () => {
-    it("should return item from highest priority storage (storage 1)", async () => {
-      const testItem = createTestItem("test-value");
-      await storage1.setItem("key1", testItem);
+	describe("setItem", () => {
+		it("should write to primary storage", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
 
-      const result = await fallbackStorage.getItem("key1");
+			await fallbackStorage.setItem(key, item);
 
-      expect(result).toEqual(testItem);
-      expect(storage1.getItemCalls).toContain("key1");
-      expect(storage2.getItemCalls).not.toContain("key1");
-      expect(storage3.getItemCalls).not.toContain("key1");
-    });
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item);
+		});
 
-    it("should return item from second priority storage if not in first", async () => {
-      const testItem = createTestItem("test-value");
-      await storage2.setItem("key1", testItem);
+		it("should attempt to write to all storages (fire and forget for non-primary)", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
 
-      const result = await fallbackStorage.getItem("key1");
+			await fallbackStorage.setItem(key, item);
 
-      expect(result).toEqual(testItem);
-      expect(storage1.getItemCalls).toContain("key1");
-      expect(storage2.getItemCalls).toContain("key1");
-      expect(storage3.getItemCalls).not.toContain("key1");
-    });
+			// Wait a bit for the background promises to settle
+			await new Promise((resolve) => setTimeout(resolve, 10));
 
-    it("should return item from lowest priority storage if not in higher ones", async () => {
-      const testItem = createTestItem("test-value");
-      await storage3.setItem("key1", testItem);
+			expect(primaryStorage.callCounts.setItem).toBe(1);
+			expect(secondaryStorage.callCounts.setItem).toBe(1);
+			expect(tertiaryStorage.callCounts.setItem).toBe(1);
+		});
 
-      const result = await fallbackStorage.getItem("key1");
+		it("should store multiple items in primary storage", async () => {
+			const item1 = createItem("content-1");
+			const item2 = createItem("content-2");
+			const item3 = createItem("content-3");
 
-      expect(result).toEqual(testItem);
-      expect(storage1.getItemCalls).toContain("key1");
-      expect(storage2.getItemCalls).toContain("key1");
-      expect(storage3.getItemCalls).toContain("key1");
-    });
+			await fallbackStorage.setItem("key-1", item1);
+			await fallbackStorage.setItem("key-2", item2);
+			await fallbackStorage.setItem("key-3", item3);
 
-    it("should populate higher priority storages when item found in lower one", async () => {
-      const testItem = createTestItem("test-value");
-      await storage3.setItem("key1", testItem);
+			expect(primaryStorage.getStoredItems().get("key-1")).toEqual(item1);
+			expect(primaryStorage.getStoredItems().get("key-2")).toEqual(item2);
+			expect(primaryStorage.getStoredItems().get("key-3")).toEqual(item3);
+		});
 
-      await fallbackStorage.getItem("key1");
+		it("should overwrite existing item in primary storage", async () => {
+			const key = "test-key";
+			const item1 = createItem("content-1");
+			const item2 = createItem("content-2");
 
-      // Item should be set in storage1 and storage2
-      expect(storage1.setItemCalls).toContainEqual({
-        key: "key1",
-        content: testItem,
-      });
-      expect(storage2.setItemCalls).toContainEqual({
-        key: "key1",
-        content: testItem,
-      });
-    });
+			await fallbackStorage.setItem(key, item1);
+			await fallbackStorage.setItem(key, item2);
 
-    it("should not populate higher priority storages when item found in first storage", async () => {
-      const testItem = createTestItem("test-value");
-      await storage1.setItem("key1", testItem);
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item2);
+		});
 
-      await fallbackStorage.getItem("key1");
+		it("should handle complex objects as content", async () => {
+			const key = "complex-key";
+			const complexContent = {
+				nested: {
+					array: [1, 2, 3],
+					object: { foo: "bar" },
+				},
+				primitive: 42,
+			};
+			const item = createItem(complexContent);
 
-      // No setItem calls should be made since item was in highest priority storage
-      expect(storage1.setItemCalls).toHaveLength(1); // Only the initial setItem
-      expect(storage2.setItemCalls).toHaveLength(0);
-      expect(storage3.setItemCalls).toHaveLength(0);
-    });
+			await fallbackStorage.setItem(key, item);
 
-    it("should only populate storages above the source storage, not below", async () => {
-      const testItem = createTestItem("test-value");
-      await storage2.setItem("key1", testItem);
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item);
+		});
+	});
 
-      await fallbackStorage.getItem("key1");
+	describe("getItem", () => {
+		it("should retrieve item from primary storage", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+			await primaryStorage.setItem(key, item);
 
-      // Item should be set in storage1 only, not storage3
-      expect(storage1.setItemCalls).toContainEqual({
-        key: "key1",
-        content: testItem,
-      });
-      expect(storage3.setItemCalls).toHaveLength(0);
-    });
+			const retrieved = await fallbackStorage.getItem(key);
 
-    it("should return undefined when item not found in any storage", async () => {
-      const result = await fallbackStorage.getItem("non-existent-key");
+			expect(retrieved).toEqual(item);
+			expect(primaryStorage.callCounts.getItem).toBe(1);
+			expect(secondaryStorage.callCounts.getItem).toBe(0);
+		});
 
-      expect(result).toBeUndefined();
-      expect(storage1.getItemCalls).toContain("non-existent-key");
-      expect(storage2.getItemCalls).toContain("non-existent-key");
-      expect(storage3.getItemCalls).toContain("non-existent-key");
-    });
+		it("should retrieve item from secondary storage if not in primary", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+			await secondaryStorage.setItem(key, item);
 
-    it("should stop searching after finding item", async () => {
-      const testItem1 = createTestItem("value1");
-      const testItem2 = createTestItem("value2");
-      const testItem3 = createTestItem("value3");
+			const retrieved = await fallbackStorage.getItem(key);
 
-      await storage1.setItem("key1", testItem1);
-      await storage2.setItem("key1", testItem2);
-      await storage3.setItem("key1", testItem3);
+			expect(retrieved).toEqual(item);
+			expect(primaryStorage.callCounts.getItem).toBe(1);
+			expect(secondaryStorage.callCounts.getItem).toBe(1);
+		});
 
-      const result = await fallbackStorage.getItem("key1");
+		it("should retrieve item from tertiary storage if not in primary or secondary", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+			await tertiaryStorage.setItem(key, item);
 
-      // Should return item from highest priority storage
-      expect(result).toEqual(testItem1);
-      // Should not query storage2 and storage3
-      expect(storage2.getItemCalls).not.toContain("key1");
-      expect(storage3.getItemCalls).not.toContain("key1");
-    });
-  });
+			const retrieved = await fallbackStorage.getItem(key);
 
-  describe("setItem", () => {
-    it("should set item in all storages", async () => {
-      const testItem = createTestItem("test-value");
+			expect(retrieved).toEqual(item);
+			expect(primaryStorage.callCounts.getItem).toBe(1);
+			expect(secondaryStorage.callCounts.getItem).toBe(1);
+			expect(tertiaryStorage.callCounts.getItem).toBe(1);
+		});
 
-      await fallbackStorage.setItem("key1", testItem);
+		it("should return undefined if item not found in any storage", async () => {
+			const retrieved = await fallbackStorage.getItem("non-existent-key");
 
-      expect(storage1.setItemCalls).toContainEqual({
-        key: "key1",
-        content: testItem,
-      });
-      expect(storage2.setItemCalls).toContainEqual({
-        key: "key1",
-        content: testItem,
-      });
-      expect(storage3.setItemCalls).toContainEqual({
-        key: "key1",
-        content: testItem,
-      });
-    });
+			expect(retrieved).toBeUndefined();
+			expect(primaryStorage.callCounts.getItem).toBe(1);
+			expect(secondaryStorage.callCounts.getItem).toBe(1);
+			expect(tertiaryStorage.callCounts.getItem).toBe(1);
+		});
 
-    it("should call setItem on all storages even if one fails", async () => {
-      const testItem = createTestItem("test-value");
-      const storage2Spy = vi
-        .spyOn(storage2, "setItem")
-        .mockRejectedValue(new Error("Storage2 error"));
+		it("should write back item from secondary to primary on get", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+			await secondaryStorage.setItem(key, item);
 
-      try {
-        await fallbackStorage.setItem("key1", testItem);
-      } catch {
-        // Expected to fail
-      }
+			const retrieved = await fallbackStorage.getItem(key);
 
-      // Should still attempt to set in storage1 and storage3
-      expect(storage1.setItemCalls.length).toBeGreaterThan(0);
-      expect(storage2Spy).toHaveBeenCalled();
-    });
-  });
+			expect(retrieved).toEqual(item);
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item);
+		});
 
-  describe("removeItem", () => {
-    it("should remove item from all storages", async () => {
-      const testItem = createTestItem("test-value");
+		it("should write back item from tertiary to primary and secondary on get", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+			await tertiaryStorage.setItem(key, item);
 
-      await fallbackStorage.setItem("key1", testItem);
-      await fallbackStorage.removeItem("key1");
+			const retrieved = await fallbackStorage.getItem(key);
 
-      expect(storage1.removeItemCalls).toContain("key1");
-      expect(storage2.removeItemCalls).toContain("key1");
-      expect(storage3.removeItemCalls).toContain("key1");
-    });
+			expect(retrieved).toEqual(item);
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item);
+			expect(secondaryStorage.getStoredItems().get(key)).toEqual(item);
+		});
 
-    it("should remove item from all storages even if it doesn't exist in some", async () => {
-      const testItem = createTestItem("test-value");
-      await storage1.setItem("key1", testItem);
+		it("should prefer primary storage over secondary even if both have the item", async () => {
+			const key = "test-key";
+			const primaryItem = createItem("primary-content");
+			const secondaryItem = createItem("secondary-content");
 
-      await fallbackStorage.removeItem("key1");
+			await primaryStorage.setItem(key, primaryItem);
+			await secondaryStorage.setItem(key, secondaryItem);
 
-      expect(storage1.removeItemCalls).toContain("key1");
-      expect(storage2.removeItemCalls).toContain("key1");
-      expect(storage3.removeItemCalls).toContain("key1");
-    });
-  });
+			const retrieved = await fallbackStorage.getItem(key);
 
-  describe("clear", () => {
-    it("should clear all storages", async () => {
-      const testItem = createTestItem("test-value");
+			expect(retrieved).toEqual(primaryItem);
+			expect(primaryStorage.callCounts.getItem).toBe(1);
+			expect(secondaryStorage.callCounts.getItem).toBe(0);
+		});
 
-      await fallbackStorage.setItem("key1", testItem);
-      await fallbackStorage.setItem("key2", testItem);
-      await fallbackStorage.clear();
+		it("should handle rapid sequential get operations", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+			await primaryStorage.setItem(key, item);
 
-      // All storages should be cleared
-      expect(await storage1.getItem("key1")).toBeUndefined();
-      expect(await storage2.getItem("key1")).toBeUndefined();
-      expect(await storage3.getItem("key1")).toBeUndefined();
-      expect(await storage1.getItem("key2")).toBeUndefined();
-      expect(await storage2.getItem("key2")).toBeUndefined();
-      expect(await storage3.getItem("key2")).toBeUndefined();
-    });
-  });
+			const results = await Promise.all([
+				fallbackStorage.getItem(key),
+				fallbackStorage.getItem(key),
+				fallbackStorage.getItem(key),
+			]);
 
-  describe("cache hierarchy", () => {
-    it("should work as a proper fallback cache with three-tier hierarchy", async () => {
-      const testItem = createTestItem("cached-data");
+			expect(results).toEqual([item, item, item]);
+		});
+	});
 
-      // Initially, item only exists in storage3 (slow storage)
-      await storage3.setItem("data-key", testItem);
+	describe("removeItem", () => {
+		it("should remove item from all storages", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
 
-      // First access: should retrieve from storage3 and populate storage1 and storage2
-      const result1 = await fallbackStorage.getItem("data-key");
-      expect(result1).toEqual(testItem);
-      expect(storage1.setItemCalls).toContainEqual({
-        key: "data-key",
-        content: testItem,
-      });
-      expect(storage2.setItemCalls).toContainEqual({
-        key: "data-key",
-        content: testItem,
-      });
+			await primaryStorage.setItem(key, item);
+			await secondaryStorage.setItem(key, item);
+			await tertiaryStorage.setItem(key, item);
 
-      // Reset call tracking
-      storage1.setItemCalls = [];
-      storage2.setItemCalls = [];
+			await fallbackStorage.removeItem(key);
 
-      // Second access: should retrieve directly from storage1 (highest priority)
-      const result2 = await fallbackStorage.getItem("data-key");
-      expect(result2).toEqual(testItem);
-      // No additional setItem calls should be made
-      expect(storage1.setItemCalls).toHaveLength(0);
-      expect(storage2.setItemCalls).toHaveLength(0);
-    });
+			expect(primaryStorage.getStoredItems().get(key)).toBeUndefined();
+			expect(secondaryStorage.getStoredItems().get(key)).toBeUndefined();
+			expect(tertiaryStorage.getStoredItems().get(key)).toBeUndefined();
+		});
 
-    it("should correctly handle multiple keys in fallback scenario", async () => {
-      const item1 = createTestItem("value1");
-      const item2 = createTestItem("value2");
-      const item3 = createTestItem("value3");
+		it("should call removeItem on all storages", async () => {
+			const key = "test-key";
 
-      // Distribute items across different storages
-      await storage1.setItem("key1", item1);
-      await storage2.setItem("key2", item2);
-      await storage3.setItem("key3", item3);
+			await fallbackStorage.removeItem(key);
 
-      // Retrieve all items
-      const result1 = await fallbackStorage.getItem("key1");
-      const result2 = await fallbackStorage.getItem("key2");
-      const result3 = await fallbackStorage.getItem("key3");
+			expect(primaryStorage.callCounts.removeItem).toBe(1);
+			expect(secondaryStorage.callCounts.removeItem).toBe(1);
+			expect(tertiaryStorage.callCounts.removeItem).toBe(1);
+		});
 
-      expect(result1).toEqual(item1);
-      expect(result2).toEqual(item2);
-      expect(result3).toEqual(item3);
+		it("should not throw when removing non-existent key", async () => {
+			await expect(
+				fallbackStorage.removeItem("non-existent-key"),
+			).resolves.toBeUndefined();
+		});
 
-      // Verify key2 was populated in storage1
-      expect(storage1.setItemCalls).toContainEqual({
-        key: "key2",
-        content: item2,
-      });
-      // Verify key3 was populated in storage1 and storage2
-      expect(storage1.setItemCalls).toContainEqual({
-        key: "key3",
-        content: item3,
-      });
-      expect(storage2.setItemCalls).toContainEqual({
-        key: "key3",
-        content: item3,
-      });
-    });
-  });
+		it("should remove only the specified key", async () => {
+			const key1 = "key-1";
+			const key2 = "key-2";
+			const item = createItem("test-content");
+
+			await primaryStorage.setItem(key1, item);
+			await primaryStorage.setItem(key2, item);
+
+			await fallbackStorage.removeItem(key1);
+
+			expect(primaryStorage.getStoredItems().get(key1)).toBeUndefined();
+			expect(primaryStorage.getStoredItems().get(key2)).toEqual(item);
+		});
+
+		it("should allow re-adding item after removal", async () => {
+			const key = "test-key";
+			const item1 = createItem("content-1");
+			const item2 = createItem("content-2");
+
+			await fallbackStorage.setItem(key, item1);
+			await fallbackStorage.removeItem(key);
+			await fallbackStorage.setItem(key, item2);
+
+			const retrieved = await fallbackStorage.getItem(key);
+			expect(retrieved).toEqual(item2);
+		});
+	});
+
+	describe("clear", () => {
+		it("should clear all storages", async () => {
+			const item = createItem("test-content");
+
+			await primaryStorage.setItem("key-1", item);
+			await secondaryStorage.setItem("key-2", item);
+			await tertiaryStorage.setItem("key-3", item);
+
+			await fallbackStorage.clear();
+
+			expect(primaryStorage.getStoredItems().size).toBe(0);
+			expect(secondaryStorage.getStoredItems().size).toBe(0);
+			expect(tertiaryStorage.getStoredItems().size).toBe(0);
+		});
+
+		it("should call clear on all storages", async () => {
+			await fallbackStorage.clear();
+
+			expect(primaryStorage.callCounts.clear).toBe(1);
+			expect(secondaryStorage.callCounts.clear).toBe(1);
+			expect(tertiaryStorage.callCounts.clear).toBe(1);
+		});
+
+		it("should clear empty cache without error", async () => {
+			await expect(fallbackStorage.clear()).resolves.toBeUndefined();
+		});
+
+		it("should allow adding items after clear", async () => {
+			const item1 = createItem("content-1");
+			const item2 = createItem("content-2");
+
+			await fallbackStorage.setItem("key-1", item1);
+			await fallbackStorage.clear();
+			await fallbackStorage.setItem("key-2", item2);
+
+			const retrieved = await fallbackStorage.getItem("key-2");
+			expect(retrieved).toEqual(item2);
+		});
+
+		it("should handle multiple consecutive clears", async () => {
+			const item = createItem("test-content");
+
+			await fallbackStorage.setItem("key-1", item);
+			await fallbackStorage.clear();
+			await fallbackStorage.clear();
+
+			const retrieved = await fallbackStorage.getItem("key-1");
+			expect(retrieved).toBeUndefined();
+		});
+	});
+
+	describe("with two storages", () => {
+		beforeEach(() => {
+			fallbackStorage = new FallbackStorage([primaryStorage, secondaryStorage]);
+		});
+
+		it("should work with minimal storage setup", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+
+			await fallbackStorage.setItem(key, item);
+			const retrieved = await fallbackStorage.getItem(key);
+
+			expect(retrieved).toEqual(item);
+		});
+
+		it("should fallback to secondary storage", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+
+			await secondaryStorage.setItem(key, item);
+
+			const retrieved = await fallbackStorage.getItem(key);
+
+			expect(retrieved).toEqual(item);
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item);
+		});
+	});
+
+	describe("edge cases", () => {
+		it("should handle empty string keys", async () => {
+			const item = createItem("content");
+			const emptyKey = "";
+
+			await fallbackStorage.setItem(emptyKey, item);
+			const retrieved = await fallbackStorage.getItem(emptyKey);
+
+			expect(retrieved).toEqual(item);
+		});
+
+		it("should handle very long keys", async () => {
+			const longKey = "k".repeat(10000);
+			const item = createItem("content");
+
+			await fallbackStorage.setItem(longKey, item);
+			const retrieved = await fallbackStorage.getItem(longKey);
+
+			expect(retrieved).toEqual(item);
+		});
+
+		it("should handle special characters in keys", async () => {
+			const specialKeys = [
+				"key-with-dashes",
+				"key_with_underscores",
+				"key.with.dots",
+				"key/with/slashes",
+				"key:with:colons",
+				"key with spaces",
+				"key\twith\ttabs",
+				"key\nwith\nnewlines",
+			];
+
+			const item = createItem("content");
+
+			for (const key of specialKeys) {
+				await fallbackStorage.setItem(key, item);
+			}
+
+			for (const key of specialKeys) {
+				const retrieved = await fallbackStorage.getItem(key);
+				expect(retrieved).toEqual(item);
+			}
+		});
+
+		it("should handle very large objects as content", async () => {
+			const largeArray = Array.from({ length: 1000 }, (_, i) => ({
+				id: i,
+				value: `item-${i}`,
+				nested: {
+					array: Array(10).fill(i),
+					text: "x".repeat(1000),
+				},
+			}));
+
+			const item = createItem(largeArray);
+
+			await fallbackStorage.setItem("large-key", item);
+			const retrieved = await fallbackStorage.getItem("large-key");
+
+			expect(retrieved).toEqual(item);
+		});
+
+		it("should handle null and undefined content", async () => {
+			const nullItem = createItem(null);
+			const undefinedItem = createItem(undefined);
+
+			await fallbackStorage.setItem("null-key", nullItem);
+			await fallbackStorage.setItem("undefined-key", undefinedItem);
+
+			const nullRetrieved = await fallbackStorage.getItem("null-key");
+			const undefinedRetrieved = await fallbackStorage.getItem("undefined-key");
+
+			expect(nullRetrieved).toEqual(nullItem);
+			expect(undefinedRetrieved).toEqual(undefinedItem);
+		});
+
+		it.each([
+			{ content: "a", ttl: null, staleTtl: null },
+			{ content: "b", ttl: 5000, staleTtl: null },
+			{ content: "c", ttl: 5000, staleTtl: 3000 },
+			{ content: "d", ttl: 0, staleTtl: 0 },
+		])(
+			"should handle metadata with ttl=$ttl, staleTtl=$staleTtl",
+			async ({ content, ttl, staleTtl }) => {
+				const item: CachedItem = {
+					content,
+					meta: {
+						createdAt: Date.now(),
+						ttl,
+						staleTtl,
+					},
+				};
+
+				const key = `metadata-${content}-${ttl}-${staleTtl}`;
+				await fallbackStorage.setItem(key, item);
+				const retrieved = await fallbackStorage.getItem(key);
+
+				expect(retrieved).toBeDefined();
+				expect(retrieved?.content).toBe(content);
+				expect(retrieved?.meta.ttl).toBe(ttl);
+				expect(retrieved?.meta.staleTtl).toBe(staleTtl);
+			},
+		);
+	});
+
+	describe("concurrent operations", () => {
+		it("should handle concurrent setItem operations", async () => {
+			const item = createItem("concurrent-content");
+
+			const promises = Array.from({ length: 10 }, (_, i) =>
+				fallbackStorage.setItem(`key-${i}`, item),
+			);
+
+			await Promise.all(promises);
+
+			expect(primaryStorage.callCounts.setItem).toBe(10);
+		});
+
+		it("should handle concurrent getItem operations", async () => {
+			const item = createItem("test-content");
+			await primaryStorage.setItem("shared-key", item);
+
+			const promises = Array.from({ length: 10 }, () =>
+				fallbackStorage.getItem("shared-key"),
+			);
+
+			const results = await Promise.all(promises);
+
+			expect(results).toHaveLength(10);
+			expect(results.every((r) => r === item)).toBe(true);
+		});
+
+		it("should handle concurrent mixed operations", async () => {
+			const promises: Promise<unknown>[] = [];
+
+			for (let i = 0; i < 5; i++) {
+				const item = createItem(`content-${i}`);
+				promises.push(fallbackStorage.setItem(`key-${i}`, item));
+			}
+
+			for (let i = 0; i < 5; i++) {
+				promises.push(fallbackStorage.getItem(`key-${i}`));
+			}
+
+			for (let i = 0; i < 5; i++) {
+				promises.push(fallbackStorage.removeItem(`key-${i}`));
+			}
+
+			await expect(Promise.all(promises)).resolves.toBeDefined();
+		});
+
+		it("should handle concurrent clear and other operations", async () => {
+			const item = createItem("test-content");
+			await fallbackStorage.setItem("key-1", item);
+
+			const promises = [
+				fallbackStorage.clear(),
+				fallbackStorage.setItem("key-2", item),
+				fallbackStorage.getItem("key-1"),
+			];
+
+			await expect(Promise.all(promises)).resolves.toBeDefined();
+		});
+	});
+
+	describe("write-back behavior", () => {
+		it("should write back items from lower-priority storages to higher-priority ones", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+
+			// Put item only in tertiary storage
+			await tertiaryStorage.setItem(key, item);
+
+			// Get item through fallback storage
+			await fallbackStorage.getItem(key);
+
+			// Verify it was written back to primary and secondary
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item);
+			expect(secondaryStorage.getStoredItems().get(key)).toEqual(item);
+			expect(tertiaryStorage.getStoredItems().get(key)).toEqual(item);
+		});
+
+		it("should not write back when item is found in primary storage", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+
+			await primaryStorage.setItem(key, item);
+			const initialSecondarySetCalls = secondaryStorage.callCounts.setItem;
+			const initialTertiarySetCalls = tertiaryStorage.callCounts.setItem;
+
+			await fallbackStorage.getItem(key);
+
+			// Verify secondary and tertiary weren't written to
+			expect(secondaryStorage.callCounts.setItem).toBe(
+				initialSecondarySetCalls,
+			);
+			expect(tertiaryStorage.callCounts.setItem).toBe(initialTertiarySetCalls);
+		});
+
+		it("should write back to secondary but not tertiary when found in secondary", async () => {
+			const key = "test-key";
+			const item = createItem("test-content");
+
+			await secondaryStorage.setItem(key, item);
+			const initialTertiarySetCalls = tertiaryStorage.callCounts.setItem;
+
+			await fallbackStorage.getItem(key);
+
+			// Verify it was written to primary
+			expect(primaryStorage.getStoredItems().get(key)).toEqual(item);
+			// Verify tertiary wasn't accessed for write
+			expect(tertiaryStorage.callCounts.setItem).toBe(initialTertiarySetCalls);
+		});
+	});
 });

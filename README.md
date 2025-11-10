@@ -1,6 +1,6 @@
 # @boredland/node-ts-cache
 
-Simple and extensible caching module supporting multiple caching strategies.
+Simple and extensible caching module with Stale-While-Revalidate (SWR) strategy support.
 
 [![CI](https://github.com/boredland/node-ts-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/boredland/node-ts-cache/actions/workflows/ci.yml)
 [![The MIT License](https://img.shields.io/npm/l/node-ts-cache.svg)](http://opensource.org/licenses/MIT)
@@ -15,7 +15,7 @@ npm i @boredland/node-ts-cache
 
 ### Wrap your function calls with `withCacheFactory`
 
-Function wrapper factory for arbitrary functions. The cache key is calculated based on the parameters passed to the function.
+Function wrapper factory for arbitrary async functions. The cache key is calculated based on the parameters passed to the function.
 
 ```ts
 import {
@@ -24,73 +24,93 @@ import {
   LRUStorage,
 } from "@boredland/node-ts-cache";
 
-const doThingsCache = new CacheContainer(new LRUStorage());
+const cache = new CacheContainer(new LRUStorage());
 
 const someFn = (input: { a: string; b: number }) => Promise.resolve("result");
 
-const wrappedFn = withCacheFactory(doThingsCache)(someFn, {
+const wrappedFn = withCacheFactory(cache)(someFn, {
   prefix: "my-function",
-  strategy: "eager", // or "lazy" or "swr"
+  cacheTimeMs: 60000,
+  staleTimeMs: 120000,
 });
 
-const result = await wrappedFn({ a: "lala", b: 123 });
+const result = await wrappedFn({ a: "hello", b: 123 });
 ```
 
-### Caching Strategies
+### Caching Strategy: Stale-While-Revalidate (SWR)
 
-The `withCache` wrapper supports three different caching strategies:
+The `withCache` wrapper implements the Stale-While-Revalidate (SWR) caching strategy:
 
-#### Eager (Default)
+- **Fresh content** (within `cacheTimeMs`): returned immediately without revalidation
+- **Stale content** (within `staleTimeMs` after expiration): returned immediately while revalidating in the background
+- **Expired content** (beyond `staleTimeMs`): waits for fresh revalidation
+- **No caching** (when `cacheTimeMs=0` and `staleTimeMs=0`): function executes every time
+
+This strategy is ideal for scenarios where:
+
+- You want fast response times even with slightly outdated data
+- Background revalidation is acceptable
+- You want to minimize the number of cache misses
+
+### Options
 
 ```ts
 const wrappedFn = withCacheFactory(cacheContainer)(someFn, {
-  strategy: "eager",
+  // Cache key prefix for namespacing
+  prefix?: string;
+
+  // Time in milliseconds after which cached content is considered "expired"
+  // During this period, cached content is returned immediately without revalidation
+  // Default: 0 (no caching)
+  cacheTimeMs?: number;
+
+  // Time in milliseconds after which cached content is considered "stale"
+  // Used for Stale-While-Revalidate: stale content is returned immediately while revalidation happens in the background
+  // Must be greater than cacheTimeMs to be effective
+  // Default: 0 (no stale caching)
+  staleTimeMs?: number;
+
+  // Custom cache key calculation function
+  // Default: hash-based on parameters
+  calculateKey?: (params: Parameters) => string;
+
+  // Conditional caching predicate
+  // Return true to cache the result, false to skip caching
+  shouldStore?: (result: Awaited<Result>) => boolean;
+
+  // Concurrency limit for background revalidation tasks
+  // Default: 1
+  revalidationConcurrency?: number;
 });
 ```
 
-- Cache is populated before returning the result
-- Expired items are removed and the function is called again
+### Example: Different Cache Configurations
 
-#### Lazy
+#### No Caching (Pass-through)
 
 ```ts
-const wrappedFn = withCacheFactory(cacheContainer)(someFn, {
-  strategy: "lazy",
+const wrappedFn = withCacheFactory(cache)(someFn, {
+  cacheTimeMs: 0,
+  staleTimeMs: 0,
 });
 ```
 
-- Cache is populated in the background after returning the result
-- Expired items are invalidated on touch (when accessed)
-
-#### Stale-While-Revalidate (SWR)
+#### Fresh-only Caching (60 seconds)
 
 ```ts
-const wrappedFn = withCacheFactory(cacheContainer)(someFn, {
-  strategy: "swr",
+const wrappedFn = withCacheFactory(cache)(someFn, {
+  cacheTimeMs: 60000,
+  staleTimeMs: 0,
 });
 ```
 
-- Returns expired cache immediately while revalidating in the background
-- Revalidation is queued with configurable concurrency
-- Perfect for scenarios where stale data is acceptable
-- Only one concurrent revalidation is enqueued per cache-key
-
-### Advanced Options
+#### Stale-While-Revalidate (Fresh for 60s, stale for 120s)
 
 ```ts
-const wrappedFn = withCacheFactory(cacheContainer)(someFn, {
-  prefix: "my-function", // Cache key prefix
-  strategy: "swr", // Caching strategy
-  ttl: 60000, // Time-to-live in milliseconds (null = forever)
-  revalidationConcurrency: 5, // Max concurrent background revalidations (default: 1)
-  calculateKey: (params) => {
-    // Custom key calculation
-    return `${params[0]}-${params[1]}`;
-  },
-  shouldStore: (result) => {
-    // Conditional caching
-    return result && result.success;
-  },
+const wrappedFn = withCacheFactory(cache)(someFn, {
+  cacheTimeMs: 60000,
+  staleTimeMs: 120000,
+  revalidationConcurrency: 5,
 });
 ```
 
@@ -105,29 +125,32 @@ class MyService {
   public async getUsers(): Promise<string[]> {
     const cachedUsers = await myCache.getItem<string[]>("users");
 
-    if (cachedUsers) {
+    if (cachedUsers?.content) {
       return cachedUsers.content;
     }
 
-    const newUsers = ["Max", "User"];
+    const newUsers = ["Alice", "Bob"];
 
-    await myCache.setItem("users", newUsers, { ttl: 60000 });
+    await myCache.setItem("users", newUsers, {
+      ttl: 60000, // Content expires after 60 seconds
+      staleTtl: 120000, // Content is stale after 120 seconds
+    });
 
     return newUsers;
   }
 }
 ```
 
+## Storage Adapters
+
 ### LRUStorage
 
-The `LRUStorage` adapter uses an in-memory LRU (Least Recently Used) cache with configurable capacity:
+In-memory LRU (Least Recently Used) cache with automatic eviction:
 
 ```ts
 import { LRUStorage } from "@boredland/node-ts-cache";
 
-// Create an LRU cache with max 10,000 items
 const storage = new LRUStorage({ max: 10000 });
-
 const container = new CacheContainer(storage);
 ```
 
@@ -137,6 +160,33 @@ const container = new CacheContainer(storage);
 - LRU eviction policy when capacity is reached
 - Configurable maximum size
 - Perfect for testing and single-process applications
+
+### FallbackStorage
+
+Cascading storage that tries multiple storages in order:
+
+```ts
+import {
+  FallbackStorage,
+  LRUStorage,
+  RedisStorage,
+} from "@boredland/node-ts-cache";
+
+// Try Redis first, fall back to LRU if Redis is unavailable
+const storage = new FallbackStorage([
+  new RedisStorage(),
+  new LRUStorage({ max: 5000 }),
+]);
+
+const container = new CacheContainer(storage);
+```
+
+**Behavior:**
+
+- On `getItem`: tries each storage in order until finding a hit
+- If found in a lower-priority storage: writes it back to all higher-priority storages
+- On `setItem`: always writes to the primary storage, attempts to write to others in the background
+- Ensures data consistency across multiple storage layers
 
 ## Logging
 
@@ -148,14 +198,6 @@ Set environment variable **DEBUG=node-ts-cache** to enable logging.
 ```bash
 npm test
 ```
-
-### Example Test Usage
-
-For a complete example of how to test with `LRUStorage`, see the [comprehensive test suite](./src/lruStorage.test.ts):
-
-## LICENSE
-
-Distributed under the MIT License. See LICENSE.md for more information.
 
 ## Development & Testing
 
@@ -174,6 +216,10 @@ npm run lint
 - `npm test` - Run test suite with Vitest
 - `npm run lint` - Run TypeScript and Biome linting
 - `npm run build` - Build the project
+
+## LICENSE
+
+Distributed under the MIT License. See LICENSE.md for more information.
 
 ## Credits
 
