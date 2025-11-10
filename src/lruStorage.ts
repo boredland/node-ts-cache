@@ -1,16 +1,12 @@
-import { LRUCache } from "lru-cache";
+import { LRUMapWithDelete } from "mnemonist";
 import type { CachedItem } from "./cacheContainer.ts";
 import type { Storage } from "./storage.ts";
 
 export class LRUStorage implements Storage {
-	private cache: LRUCache<string, CachedItem, unknown>;
+	private cache: LRUMapWithDelete<string, CachedItem>;
 
-	constructor({
-		max = 10_000,
-	}: Partial<LRUCache<string, CachedItem, unknown>> = {}) {
-		this.cache = new LRUCache<string, CachedItem, unknown>({
-			max,
-		});
+	constructor({ max = 10_000 }: { max?: number } = {}) {
+		this.cache = new LRUMapWithDelete<string, CachedItem>(max);
 	}
 
 	async clear(): Promise<void> {
