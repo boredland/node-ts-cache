@@ -13,7 +13,10 @@ export type CachedItem<T = unknown> = {
 export type CachingOptions = {
 	/** Number of milliseconds to expire the cached item - defaults to forever */
 	ttl: number | null;
-	/** Number of milliseconds to mark the cached item stale - defaults to the ttl */
+	/** 
+	 * Number of milliseconds to mark the cached item stale - defaults to the ttl.
+	 * If staleTtl is less than ttl, it will be adjusted to ttl + staleTtl.
+	 */
 	staleTtl: number | null;
 	/** (Default: JSON.stringify combination of className, methodName and call args) */
 	calculateKey: (data: {
@@ -27,29 +30,41 @@ export type CachingOptions = {
 };
 
 export class CacheContainer {
-	constructor(private storage: Storage) {}
+	constructor(private storage: Storage) { }
 
 	public async getItem<T>(key: string): Promise<
 		| {
-				content: T;
-				meta: { expired: boolean; stale: boolean; createdAt: number };
-		  }
+			content: T;
+			meta: { state: 'fresh' | 'stale' | 'expired'; createdAt: number };
+		}
 		| undefined
 	> {
 		const item = await this.storage.getItem(key);
 
 		if (!item) return;
 
+		const isStale = this.isStaleItem(item);
+		const isExpired = this.isItemExpired(item);
+
+		let state: "fresh" | "stale" | "expired";
+
+		if (isStale) {
+			state = "stale";
+		} else if (isExpired) {
+			state = "expired";
+		} else {
+			state = "fresh";
+		}
+
 		const result = {
 			content: item.content as T,
 			meta: {
-				createdAt: item.meta.createdAt,
-				expired: this.isItemExpired(item),
-				stale: this.isStaleItem(item),
+				...item.meta,
+				state,
 			},
 		};
 
-		if (result.meta.expired && !result.meta.stale) {
+		if (result.meta.state === "expired") {
 			await this.unsetKey(key);
 			return undefined;
 		}
@@ -67,6 +82,17 @@ export class CacheContainer {
 			staleTtl: null,
 			...options,
 		};
+
+		if (
+			finalOptions.staleTtl &&
+			finalOptions.ttl &&
+			finalOptions.staleTtl < finalOptions.ttl
+		) {
+			debug(
+				`staleTtl (${finalOptions.staleTtl}ms) is less than ttl (${finalOptions.ttl}ms); adjusting staleTtl to be ttl+staleTtl`,
+			);
+			finalOptions.staleTtl = finalOptions.ttl + finalOptions.staleTtl;
+		}
 
 		const meta: CachedItem<typeof content>["meta"] = {
 			createdAt: Date.now(),
@@ -89,9 +115,9 @@ export class CacheContainer {
 	}
 
 	private isStaleItem(item: CachedItem): boolean {
-		const staleTtl = item.meta.staleTtl ?? item.meta.ttl;
-		if (staleTtl === null) return false;
-		return Date.now() > item.meta.createdAt + staleTtl;
+		if (!this.isItemExpired(item)) return false;
+		if (item.meta.staleTtl == null) return false;
+		return Date.now() <= item.meta.createdAt + item.meta.staleTtl;
 	}
 
 	public async unsetKey(key: string): Promise<void> {
